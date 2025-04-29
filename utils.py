@@ -1,11 +1,10 @@
 import jax.numpy as jnp
 import numpy as np
 import os 
-from jax import random, lax, vmap
+from jax import random, lax, vmap, jit
 
-
-def metropolis(log_target,
-               num_params: int,
+def metropolis(data,
+               log_target,
                tau: float,
                num_iter: int,
                theta_init: jnp.ndarray = None,
@@ -14,7 +13,8 @@ def metropolis(log_target,
     Metropolis–Hastings sampler in JAX returning (chain, accepts).
 
     Args:
-      log_target : fn(theta) → log unnormalized density
+      data: an (X, y) tuple
+      log_target : fn(data, theta) → log unnormalized density
       num_params : dimensionality of theta
       tau        : proposal stddev
       num_iter   : how many MH steps to run
@@ -26,15 +26,16 @@ def metropolis(log_target,
       accepts    : array of 0/1 ints, shape (num_iter,)
     """
     key = random.PRNGKey(seed)
-    if theta_init is None:
-        theta_init = jnp.zeros((num_params,))
+       
+    num_params = theta_init.shape[0]  
 
+    @jit
     def step(carry, _):        
         theta_current, logp_current, key = carry
         key, key_proposal, key_accept = random.split(key, num=3)
 
         theta_star = theta_current + tau * random.normal(key_proposal, (num_params,))
-        logp_star = log_target(theta_star)
+        logp_star = log_target(data, theta_star)
         
         log_r = logp_star - logp_current
         A = jnp.exp(jnp.minimum(log_r, 0.0))
@@ -48,7 +49,7 @@ def metropolis(log_target,
 
     _, (thetas_tail, accepts) = lax.scan(
         step,
-        (theta_init, log_target(theta_init), key),
+        (theta_init, log_target(data, theta_init), key),
         None,
         length=num_iter
     )
@@ -59,10 +60,11 @@ def metropolis(log_target,
     return thetas, accepts
 
 
-def metropolis_multiple_chains(log_target, num_params, num_chains, tau, num_iter, theta_init, seeds, warm_up=0):
+def metropolis_multiple_chains(data, log_target, num_params, num_chains, tau, num_iter, theta_init, seeds, warm_up=0):
     """ Runs multiple Metropolis-Hastings chains. The i'th chain should be initialized using the i'th vector in theta_init, i.e. theta_init[i, :]
 
     Arguments:
+        data: an (X, y) tuple
         log_target:         function for evaluating the log joint distribution
         num_params:         number of parameters of the joint distribution (integer)
         num_chains:         number of MCMC chains
@@ -81,7 +83,7 @@ def metropolis_multiple_chains(log_target, num_params, num_chains, tau, num_iter
     assert theta_init.shape == (num_chains, num_params), "theta_init seems to have the wrong dimensions. Plaese check your code."
     assert seeds.shape == (num_chains,), "seeds seem to have the wrong dimensions. Plaese check your code."
     
-    metropolis_single_chain = lambda t, s: metropolis(log_target, num_params, tau, num_iter, t, s)
+    metropolis_single_chain = lambda t, s: metropolis(data, log_target, tau, num_iter, t, s)
     thetas, accept_rates = vmap(metropolis_single_chain)(theta_init, seeds)
     
     thetas = thetas[:, warm_up:, :]
